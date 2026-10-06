@@ -1,18 +1,55 @@
-import { useState } from "react";
-import type { StatusFilter } from "./types";
+import { useEffect, useState } from "react";
+import type { Filters, StatusFilter } from "./types";
 import { useTaskSearch } from "./useTaskSearch";
-import { pageOf } from "./query";
+import { pageOf, readQuery, subscribeToQuery, writeQuery } from "./query";
 export default function App() {
-  const [draft, setDraft] = useState("");
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("ALL");
-  const [page, setPage] = useState(1);
-  const { tasks, loading, error } = useTaskSearch(q, status);
-  const view = pageOf(tasks, page);
+  // 已提交并同步到地址栏的查询状态；输入框草稿单独保存，未提交不写 URL。
+  const [filters, setFilters] = useState<Filters>(() =>
+    readQuery(window.location.search),
+  );
+  const [draft, setDraft] = useState(filters.q);
+  const { tasks, loading, error, settled } = useTaskSearch(
+    filters.q,
+    filters.status,
+  );
+  const view = pageOf(tasks, filters.page);
+  function commit(next: Filters, mode: "push" | "replace") {
+    writeQuery(next, mode);
+    setFilters(next);
+  }
+  // 浏览器前进/后退：从地址栏恢复输入、筛选与页码，并触发对应查询。
+  useEffect(
+    () =>
+      subscribeToQuery((next) => {
+        setDraft(next.q);
+        setFilters(next);
+      }),
+    [],
+  );
+  // 越界页码只在“当前条件”的查询成功返回后，按真实结果页数用 replace 修正；
+  // 加载前的空列表或上一次查询结果都不会提前把页码改回 1。
+  useEffect(() => {
+    if (loading || error || !settled) return;
+    if (settled.q !== filters.q || settled.status !== filters.status) return;
+    if (view.current === filters.page) return;
+    const next = { ...filters, page: view.current };
+    writeQuery(next, "replace");
+    setFilters(next);
+  }, [loading, error, settled, filters, view.current]);
   function search(e: React.FormEvent) {
     e.preventDefault();
-    setQ(draft.trim());
-    setPage(1);
+    const value = draft.trim();
+    setDraft(value);
+    // 查询：trim 搜索词、页码回 1、replace 当前历史项。
+    commit({ ...filters, q: value, page: 1 }, "replace");
+  }
+  function changeStatus(status: StatusFilter) {
+    // 筛选变化：push 新历史项，页码回 1。
+    commit({ ...filters, status, page: 1 }, "push");
+  }
+  function goPage(page: number) {
+    // 翻页：push 新历史项。
+    commit({ ...filters, page }, "push");
   }
   return (
     <>
@@ -36,11 +73,8 @@ export default function App() {
           <label>
             状态
             <select
-              value={status}
-              onChange={(e) => {
-                setStatus(e.target.value as StatusFilter);
-                setPage(1);
-              }}
+              value={filters.status}
+              onChange={(e) => changeStatus(e.target.value as StatusFilter)}
             >
               <option value="ALL">全部状态</option>
               <option value="TODO">待办</option>
@@ -87,7 +121,7 @@ export default function App() {
         <nav className="pager" aria-label="分页">
           <button
             disabled={loading || view.current === 1}
-            onClick={() => setPage(view.current - 1)}
+            onClick={() => goPage(view.current - 1)}
           >
             上一页
           </button>
@@ -96,7 +130,7 @@ export default function App() {
           </span>
           <button
             disabled={loading || view.current === view.pages}
-            onClick={() => setPage(view.current + 1)}
+            onClick={() => goPage(view.current + 1)}
           >
             下一页
           </button>
